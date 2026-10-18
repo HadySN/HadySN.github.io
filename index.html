@@ -94,6 +94,9 @@
     .walletconnect-button { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; color: var(--ink); background: #ffffff08; transition: border-color .15s, background .15s; }
     .walletconnect-button:hover { border-color: var(--violet); background: #a78bfa12; }
     .walletconnect-button:disabled { opacity: .62; cursor: wait; }
+    .guest-button { width: 100%; min-height: 44px; border: 1px solid #a7f3d044; border-radius: 11px; padding: 11px 14px; color: var(--mint); background: linear-gradient(110deg, #a7f3d012, #a78bfa12); transition: border-color .15s, background .15s, transform .15s; }
+    .guest-button:hover { border-color: var(--mint); background: #a7f3d020; transform: translateY(-1px); }
+    .guest-button:disabled { opacity: .62; cursor: wait; }
     .test-id { color: #c7b4ff; background: none; border: 0; padding: 12px 2px 0; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
     .note { color: #928ba9; font-size: 11px; line-height: 1.7; margin: 13px 0 0; }
     .error { min-height: 17px; color: var(--danger); font-size: 12px; margin: 7px 0 0; }
@@ -1511,10 +1514,11 @@
               <div id="wallet-entry" class="wallet-entry">
                 <div id="wallet-connect-actions" class="wallet-connect-actions">
                   <h3 style="margin:0">Connect your wallet to verify Chog ownership</h3>
-                  <p class="note">Connect first, then press Sign to send a verification-message request to your wallet. This is a message signature, not a transaction; NFT ownership is checked only after signature verification.</p>
+                  <p class="note">Connect first, then press Sign to send a verification-message request to your wallet. This is a message signature, not a transaction; NFT ownership is checked only after signature verification. If no browser wallet is detected, WalletConnect opens automatically with a QR option.</p>
                   <p class="note cloud-sync-note">Completed stages sync to your verified wallet. Reconnect the same wallet on another device to resume.</p>
                   <button class="primary" id="start-btn" type="button">Connect Wallet</button>
-                  <button class="walletconnect-button" id="walletconnect-btn" type="button">Connect with WalletConnect · QR</button>
+                  <p class="note guest-play-note" id="guest-play-note">No wallet or NFT is needed. Guest progress is not saved or synced, and scores are never submitted to the leaderboard.</p>
+                  <button class="guest-button" id="guest-start-btn" type="button">Play as Guest</button>
                 </div>
                 <div id="wallet-sign-entry" class="wallet-sign-entry hidden">
                   <h3 style="margin:0">Wallet connected</h3>
@@ -1640,7 +1644,7 @@
                 <button class="puzzle-title" type="button" aria-expanded="false"><span class="p-title-left"><span class="num">04</span><img class="chog-mini"  alt="" aria-hidden="true"><span><strong>Guess the Word</strong><small>Solve a random short riddle to unlock the next door</small></span></span><span class="lock-icon">🔒</span></button>
                 <div class="puzzle-content hidden">
                   <p class="question" id="echo-riddle-question">I have many keys but open no doors. I hold spaces, and every message is typed on me. What am I?</p>
-                  <form class="answer-row" data-puzzle="3"><input type="text" placeholder="Type your answer" aria-label="Guess the Word answer" autocomplete="off"><button class="primary" type="submit">Check</button></form>
+                  <form class="answer-row" data-puzzle="4"><input type="text" placeholder="Type your answer" aria-label="Guess the Word answer" autocomplete="off"><button class="primary" type="submit">Check</button></form>
                   <button class="hint-btn hidden" id="echo-hint-button" type="button" data-hint="hint-4" aria-hidden="true" aria-expanded="false">Show Hint</button><p class="hint-text" id="hint-4">You are looking at it now, and you probably use it to answer.</p><p class="feedback" id="feedback-4" role="status"></p>
                 </div>
               </article>
@@ -1677,6 +1681,7 @@
               <p class="finish-message">Chog never lose, you are so sexy and iconic</p>
               <div class="finish-name" id="finish-name"></div>
               <time class="finish-time" id="finish-time"></time>
+              <p class="note hidden" id="guest-finish-note">Guest run complete. Your progress and time were not saved or submitted.</p>
               <button class="primary" type="button" id="finish-leaderboard-btn">Leaderboard</button>
               <button class="restart" type="button" id="finish-home-btn">Go Home</button>
             </section>
@@ -1701,7 +1706,6 @@
         window.setTimeout(() => {
           welcomeScreen.classList.add('hidden');
           document.getElementById('start-btn').focus({ preventScroll: true });
-          void connectWallet();
         }, 430);
       });
       welcomeStartButton.focus({ preventScroll: true });
@@ -1723,6 +1727,7 @@
       let jigsawMoves = 0;
       let selectedJigsawSlot = null;
       let playerName = '';
+      let guestMode = false;
       let sessionToken = '';
       let elapsedHandle = null;
       let elapsedAnchor = 0;
@@ -2124,7 +2129,9 @@
           || announced.find(item => /metamask/i.test(item.name))
           || announced[0];
         if (selected) return selected.provider;
-        throw new Error('An EVM wallet was not found. Enable your wallet extension for this site and reload, or open this page in your wallet browser.');
+        const missingWalletError = new Error('No browser wallet was detected.');
+        missingWalletError.code = 'NO_INJECTED_WALLET';
+        throw missingWalletError;
       }
 
       async function getWalletConnectProvider() {
@@ -2149,9 +2156,9 @@
           });
         }
         const provider = await walletConnectProviderPromise;
-        if (!provider.session) {
-          await provider.connect({ chains: [143], rpcMap: { 143: 'https://rpc.monad.xyz' } });
-        }
+        // Open the wallet picker/QR on every explicit WalletConnect click, even
+        // when this browser has a persisted session from an earlier visit.
+        await provider.connect();
         return provider;
       }
 
@@ -2159,25 +2166,33 @@
         if (leaderboardStartPending) return;
         leaderboardStartPending = true;
         const startButton = document.getElementById('start-btn');
-        const walletConnectButton = document.getElementById('walletconnect-btn');
         const walletEntry = document.getElementById('wallet-entry');
         const walletConnectActions = document.getElementById('wallet-connect-actions');
         const walletSignEntry = document.getElementById('wallet-sign-entry');
         const deniedScreen = document.getElementById('not-chog-screen');
         const signButton = document.getElementById('sign-btn');
         startButton.disabled = true;
-        walletConnectButton.disabled = true;
         pendingWalletVerification = null;
         signButton.disabled = false;
         walletSignEntry.classList.add('hidden');
         walletConnectActions.classList.remove('hidden');
-        startError.style.color = '';
+        startError.style.color = 'var(--muted)';
         startError.textContent = 'Connecting wallet to Monad Mainnet…';
         deniedScreen.classList.add('hidden');
         try {
-          const provider = connectionMethod === 'walletconnect'
-            ? await getWalletConnectProvider()
-            : await detectWalletProvider();
+          let provider;
+          if (connectionMethod === 'walletconnect') {
+            provider = await getWalletConnectProvider();
+          } else {
+            try {
+              provider = await detectWalletProvider();
+            } catch (detectionError) {
+              if (!detectionError || detectionError.code !== 'NO_INJECTED_WALLET') throw detectionError;
+              connectionMethod = 'walletconnect';
+              startError.textContent = 'No browser wallet detected. Opening WalletConnect…';
+              provider = await getWalletConnectProvider();
+            }
+          }
           const accounts = await provider.request({ method: 'eth_requestAccounts' });
           const wallet = Array.isArray(accounts) && accounts[0] ? String(accounts[0]) : '';
           if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) throw new Error('No valid wallet address was selected.');
@@ -2216,12 +2231,12 @@
             deniedScreen.classList.remove('hidden');
             startError.textContent = '';
           } else {
+            startError.style.color = error && error.code === 'WRONG_NETWORK' ? 'var(--muted)' : '';
             startError.textContent = error && typeof error.message === 'string' && /^[\x00-\x7F]*$/.test(error.message) ? error.message : 'Could not connect your wallet right now. Please try again.';
           }
         } finally {
           leaderboardStartPending = false;
           startButton.disabled = false;
-          walletConnectButton.disabled = false;
         }
       }
 
@@ -2307,7 +2322,11 @@
         try {
           await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: expectedChainId }] });
         } catch (error) {
-          if (!error || (error.code !== 4902 && error.code !== -32603)) throw new Error('Switch your wallet to Monad Mainnet (Chain ID 143) to continue.');
+          if (!error || (error.code !== 4902 && error.code !== -32603)) {
+            const networkError = new Error('Your wallet is not on Monad yet. Switch networks in your wallet and try again.');
+            networkError.code = 'WRONG_NETWORK';
+            throw networkError;
+          }
           await provider.request({
             method: 'wallet_addEthereumChain',
             params: [{
@@ -2320,7 +2339,11 @@
           });
         }
         const confirmed = String(await provider.request({ method: 'eth_chainId' })).toLowerCase();
-        if (confirmed !== expectedChainId) throw new Error('Select Monad Mainnet (Chain ID 143) before continuing.');
+        if (confirmed !== expectedChainId) {
+          const networkError = new Error('Your wallet is not on Monad yet. Switch networks in your wallet and try again.');
+          networkError.code = 'WRONG_NETWORK';
+          throw networkError;
+        }
       }
 
       const ECHO_RIDDLES = [
@@ -2376,8 +2399,47 @@
         { question: 'How many months in a year have at least 28 days?', answers: ['12', 'twelve', 'all', 'all twelve', 'all months'] }
       ];
 
+      function beginGuestRun() {
+        if (leaderboardStartPending) return;
+        leaderboardStartPending = true;
+        const guestButton = document.getElementById('guest-start-btn');
+        guestButton.disabled = true;
+        startError.textContent = '';
+        try {
+          guestMode = true;
+          activeLeaderboardRun = null;
+          resumedProgressRun = false;
+          playerName = 'Guest';
+          resetRunForFreshStart();
+          updateProgressSyncStatus('Guest mode · Progress is not saved or synced.', false);
+          document.getElementById('progress-sync-retry').disabled = false;
+          activeEchoRiddle = ECHO_RIDDLES[Math.floor(Math.random() * ECHO_RIDDLES.length)];
+          document.getElementById('echo-riddle-question').textContent = activeEchoRiddle.question;
+          document.body.classList.add('playing');
+          document.getElementById('game-token').textContent = 'Guest Mode · Not saved or ranked';
+          startScreen.classList.add('hidden');
+          gameScreen.classList.remove('hidden');
+          roomTag.textContent = 'Guest Mode';
+          buildMathPuzzle();
+          buildMirrorBoard();
+          startStopwatch(new Date().toISOString());
+          const firstPuzzle = document.getElementById('puzzle-0');
+          runDoorTransition('Guest Adventure · Echo Sequence', () => {
+            activatePuzzle(firstPuzzle, '#echo-replay');
+          }, false);
+        } catch (_) {
+          guestMode = false;
+          playerName = '';
+          startError.textContent = 'Could not start guest mode. Please try again.';
+        } finally {
+          leaderboardStartPending = false;
+          guestButton.disabled = false;
+        }
+      }
+
       async function beginVerifiedRun() {
         if (leaderboardStartPending) return;
+        guestMode = false;
         const nameInput = document.getElementById('display-name');
         const nameError = document.getElementById('name-error');
         const nameButton = document.getElementById('name-start-btn');
@@ -2580,6 +2642,12 @@
 
       function updateProgressSyncStatus(message, canRetry = false) {
         const status = document.getElementById('cloud-sync-status');
+        if (guestMode) {
+          if (status) status.textContent = 'Guest mode · Progress is not saved or synced.';
+          const retry = document.getElementById('progress-sync-retry');
+          if (retry) retry.classList.add('hidden');
+          return;
+        }
         if (status) status.textContent = message;
         const retry = document.getElementById('progress-sync-retry');
         if (retry) retry.classList.toggle('hidden', !canRetry);
@@ -2608,7 +2676,7 @@
       }
 
       async function flushProgressSaveQueue() {
-        if (progressSyncBusy || !sessionToken || pendingProgressStages.size === 0) return;
+        if (guestMode || progressSyncBusy || !sessionToken || pendingProgressStages.size === 0) return;
         progressSyncBusy = true;
         const retry = document.getElementById('progress-sync-retry');
         if (retry) retry.disabled = true;
@@ -2640,7 +2708,7 @@
       }
 
       function queueProgressSave(stageIndex) {
-        if (!sessionToken || !Number.isInteger(stageIndex) || stageIndex < 0 || stageIndex > 5) return;
+        if (guestMode || !sessionToken || !Number.isInteger(stageIndex) || stageIndex < 0 || stageIndex > 5) return;
         pendingProgressStages.add(stageIndex);
         void flushProgressSaveQueue();
       }
@@ -2704,7 +2772,7 @@
       }
 
       async function submitLeaderboardRun() {
-        if (leaderboardSubmitPending) return;
+        if (guestMode || leaderboardSubmitPending) return;
         if (!activeLeaderboardRun || !sessionToken) return;
         leaderboardSubmitPending = true;
         try {
@@ -2814,13 +2882,21 @@
         gameScreen.classList.add('game-finished');
         const finishScreen = document.getElementById('finish-screen');
         const leaderboardPanel = document.querySelector('.leaderboard-panel');
-        finishScreen.append(leaderboardPanel);
+        const leaderboardButton = document.getElementById('finish-leaderboard-btn');
+        const guestFinishNote = document.getElementById('guest-finish-note');
+        leaderboardButton.classList.toggle('hidden', guestMode);
+        guestFinishNote.classList.toggle('hidden', !guestMode);
+        if (guestMode) {
+          if (leaderboardPanel.parentElement !== startScreen) startScreen.append(leaderboardPanel);
+        } else {
+          finishScreen.append(leaderboardPanel);
+          void loadLeaderboard();
+        }
         finishScreen.append(document.getElementById('finish-home-btn'));
-        void loadLeaderboard();
         finishScreen.classList.remove('hidden');
         document.getElementById('finish-screen').scrollIntoView({ behavior: 'smooth', block: 'center' });
         roomTag.textContent = 'Mission complete';
-        document.getElementById('finish-leaderboard-btn').focus({ preventScroll: true });
+        document.getElementById(guestMode ? 'finish-home-btn' : 'finish-leaderboard-btn').focus({ preventScroll: true });
       }
 
       function returnToHomeWithoutClearingProgress() {
@@ -2834,6 +2910,13 @@
         gameScreen.classList.remove('game-finished');
         document.body.classList.remove('playing', 'echo-sequence-active', 'mirror-hall-active');
         welcomeScreen.classList.remove('leaving');
+        if (guestMode) {
+          guestMode = false;
+          playerName = '';
+          document.getElementById('finish-leaderboard-btn').classList.remove('hidden');
+          document.getElementById('guest-finish-note').classList.add('hidden');
+          updateProgressSyncStatus('Progress syncs to your verified wallet after each completed stage.', false);
+        }
         roomTag.textContent = playerName ? `Chog ID · ${playerName}` : 'Waiting for player';
         // Keep sessionToken, playerName, and all cloud-saved progress intact.
         welcomeStartButton.focus({ preventScroll: true });
@@ -2898,9 +2981,11 @@
         solved.add(n);
         if (n === 5) {
           setFinishElapsedTime(Math.max(0, Date.now() - elapsedAnchor));
-          markRunCompleted(playerName);
+          if (!guestMode) {
+            markRunCompleted(playerName);
+            void submitLeaderboardRun();
+          }
           clearInterval(elapsedHandle);
-          void submitLeaderboardRun();
         }
         const card = document.getElementById(`puzzle-${n}`);
         card.classList.remove('active', 'locked');
@@ -2912,7 +2997,7 @@
         feedback.textContent = 'Correct! The lock is open.';
         feedback.className = 'feedback good';
         updateProgress();
-        queueProgressSave(n);
+        if (!guestMode) queueProgressSave(n);
 
         const next = document.getElementById(`puzzle-${n + 1}`);
         const nextTitle = next ? next.querySelector('.puzzle-title strong').textContent : 'The exit door is open!';
@@ -3453,7 +3538,7 @@
           oscillator.type = 'sine';
           oscillator.frequency.setValueAtTime(frequency, now);
           gain.gain.setValueAtTime(.0001, now);
-          gain.gain.linearRampToValueAtTime(index === 0 ? .085 : index === 1 ? .060 : .048, now + 1.35);
+          gain.gain.linearRampToValueAtTime(index === 0 ? .27 : index === 1 ? .20 : .16, now + 1.35);
           gain.gain.setTargetAtTime(.0001, now + 4.9, .9);
           oscillator.connect(gain); gain.connect(musicMaster);
           musicVoices.add(oscillator);
@@ -3466,7 +3551,7 @@
           const oscillator = musicContext.createOscillator(), envelope = musicContext.createGain();
           oscillator.type = 'sine'; oscillator.frequency.setValueAtTime(frequency, startAt);
           envelope.gain.setValueAtTime(.0001, startAt);
-          envelope.gain.linearRampToValueAtTime(.032, startAt + .14);
+          envelope.gain.linearRampToValueAtTime(.11, startAt + .14);
           envelope.gain.linearRampToValueAtTime(.0001, startAt + 1.05);
           oscillator.connect(envelope); envelope.connect(musicMaster);
           musicVoices.add(oscillator);
@@ -3511,7 +3596,7 @@
           }
           await musicContext.resume(); musicEnabled = true;
           musicMaster.gain.cancelScheduledValues(musicContext.currentTime);
-          musicMaster.gain.setTargetAtTime(.82, musicContext.currentTime, .45);
+          musicMaster.gain.setTargetAtTime(.9, musicContext.currentTime, .45);
           updateMusicButtons('Music: On', true);
           playAmbientChord();
         } catch (_) {
@@ -3536,7 +3621,7 @@
       });
       void loadLeaderboard();
       document.getElementById('start-btn').addEventListener('click', () => { void connectWallet(); });
-      document.getElementById('walletconnect-btn').addEventListener('click', () => { void connectWallet('walletconnect'); });
+      document.getElementById('guest-start-btn').addEventListener('click', beginGuestRun);
       document.getElementById('sign-btn').addEventListener('click', () => { void verifyConnectedWallet(); });
       document.getElementById('change-wallet-btn').addEventListener('click', () => { void chooseDifferentWallet(); });
       document.getElementById('name-start-btn').addEventListener('click', () => { void beginVerifiedRun(); });
